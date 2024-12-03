@@ -91,6 +91,51 @@ const POSITION_ABI = {
   "type": "function"
 };
 
+const MARKET_ABI = {
+  "inputs": [
+    {
+      "internalType": "Id",
+      "name": "",
+      "type": "bytes32"
+    }
+  ],
+  "name": "market",
+  "outputs": [
+    {
+      "internalType": "uint128",
+      "name": "totalSupplyAssets",
+      "type": "uint128"
+    },
+    {
+      "internalType": "uint128",
+      "name": "totalSupplyShares",
+      "type": "uint128"
+    },
+    {
+      "internalType": "uint128",
+      "name": "totalBorrowAssets",
+      "type": "uint128"
+    },
+    {
+      "internalType": "uint128",
+      "name": "totalBorrowShares",
+      "type": "uint128"
+    },
+    {
+      "internalType": "uint128",
+      "name": "lastUpdate",
+      "type": "uint128"
+    },
+    {
+      "internalType": "uint128",
+      "name": "fee",
+      "type": "uint128"
+    }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+};
+
 // const config = {
 //   ethereum: { registry: '0xbe082293b646cb619a638d29e8eff7cf2f46aa3a', },
 //   xdai: { registry: '0x666fa9ef9bca174a042c4c306b23ba8ee0c59666', },
@@ -104,36 +149,6 @@ const config = {
 //   xdai: { registry: '0x666fa9ef9bca174a042c4c306b23ba8ee0c59666', },
 // }
 
-// # query pool holdings of base and vault tokens
-// base_token_balance = vault_shares_balance = vault_contract_address = vault_contract = vault_shares_contract = None
-// if config["baseToken"] == "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE":
-//     # the base token is ETH
-//     base_token_balance = w3.eth.get_balance(pool_contract.address)
-// elif " LP " in name:
-//     base_token_contract = w3.eth.contract(address=config["extraData"], abi=ERC20_ABI)
-//     base_token_balance = base_token_contract.functions.balanceOf(pool_contract.address).call(block_identifier=block_identifier)
-// elif config["baseToken"] != "0x0000000000000000000000000000000000000000":
-//     base_token_contract = w3.eth.contract(address=config["baseToken"], abi=ERC20_ABI)
-//     base_token_balance = base_token_contract.functions.balanceOf(pool_contract.address).call(block_identifier=block_identifier)
-// if "Morpho" in name:
-//     vault_contract_address = pool_contract.functions.vault().call(block_identifier=block_identifier)
-//     vault_contract = w3.eth.contract(address=vault_contract_address, abi=MORPHO_ABI)
-//     morpho_market_id = w3.keccak(eth_abi.encode(  # type: ignore
-//         ("address", "address", "address", "address", "uint256"),
-//         (
-//             config["baseToken"],
-//             pool_contract.functions.collateralToken().call(),
-//             pool_contract.functions.oracle().call(),
-//             pool_contract.functions.irm().call(),
-//             pool_contract.functions.lltv().call(),
-//         ),
-//     ))
-//     vault_shares_balance = vault_contract.functions.position(morpho_market_id,pool_contract.address).call()[0]
-// elif config["vaultSharesToken"] != "0x0000000000000000000000000000000000000000":
-//     vault_shares_contract = w3.eth.contract(address=config["vaultSharesToken"], abi=ERC20_ABI)
-//     vault_shares_balance = vault_shares_contract.functions.balanceOf(pool_contract.address).call(block_identifier=block_identifier)
-// else:  # shares token is null, so we use the base token in its place
-//     vault_shares_balance = base_token_balance
 async function queryPoolHoldings(poolContract, config, name) {
   let baseTokenBalance;
   let vaultSharesBalance;
@@ -203,9 +218,8 @@ async function queryPoolHoldings(poolContract, config, name) {
       })
     ]);
 
-    const morphoMarketId = ethers.utils.solidityKeccak256(
-      ['address', 'address', 'address', 'address', 'uint256'],
-      [config.baseToken, collateralToken.output, oracle.output, irm.output, lltv.output]
+    const morphoMarketId = encodeMorphoMarketIds(
+      config.baseToken, collateralToken.output, oracle.output, irm.output, lltv.output
     );
 
     const position = (
@@ -217,7 +231,23 @@ async function queryPoolHoldings(poolContract, config, name) {
       })
     ).output;
 
-    vaultSharesBalance = position;
+    const market = (
+      await sdk.api.abi.call({
+        target: vaultContractAddress,
+        abi: MARKET_ABI,
+        params: [morphoMarketId],
+        chain: config.chain
+      })
+    ).output;
+
+    const totalSupplyAssets = market.totalSupplyAssets;
+    const totalSupplyShares = market.totalSupplyShares;
+    const virtualAssets = 1;
+    const virtualShares = 1e6;
+    const vaultSharePrice = (totalSupplyAssets + virtualAssets) / (totalSupplyShares + virtualShares) * 1e12;
+    console.log('vaultSharePrice:', vaultSharePrice);
+
+    vaultSharesBalance = position.supplyShares / 1e6 * vaultSharePrice;
   } else if (config.vaultSharesToken !== '0x0000000000000000000000000000000000000000') {
     vaultSharesBalance = (
       await sdk.api.erc20.balanceOf({
@@ -232,6 +262,14 @@ async function queryPoolHoldings(poolContract, config, name) {
   }
 
   return vaultSharesBalance;
+}
+
+function encodeMorphoMarketIds(baseToken, collateral, oracle, irm, lltv) {
+  const packedIds = ethers.utils.defaultAbiCoder.encode(
+    ['address', 'address', 'address', 'address', 'uint256'],
+    [baseToken, collateral, oracle, irm, lltv]
+  );
+  return ethers.utils.keccak256(packedIds);
 }
 
 async function getApy(chain) {
@@ -255,7 +293,7 @@ async function getApy(chain) {
       params: [i],
     }));
 
-    const instances = (
+    let instances = (
       await sdk.api.abi.multiCall({
         abi: 'function getInstanceAtIndex(uint256) view returns (address)',
         calls: instanceCalls,
@@ -265,15 +303,14 @@ async function getApy(chain) {
 
     console.log('Found instances:', instances);
 
+    // Debug only on the ith instance
+    const i = 4;
+    instances = instances.slice(i, i + 1);
+    console.log('Debugging instance:', instances);
+
     const poolNames = (
       await sdk.api.abi.multiCall({
-        abi: {
-          "inputs": [],
-          "name": "name",
-          "outputs": [{"name": "", "type": "string"}],
-          "stateMutability": "view",
-          "type": "function"
-        },
+        abi: 'function name() view returns (string)',
         calls: instances.map(i => ({ target: i })),
         chain
       })
@@ -314,148 +351,11 @@ async function getApy(chain) {
     const pools = poolNames.map((name, i) => ({ name, config: poolConfig[i], info: poolInfos[i], address: instances[i] }))
     console.log('Processing pools:', pools.map(p => ({ name: p.name, address: p.address })));
 
-    let morphoVaultsAndPositions = [];
-    const morphoVaults = []
-    const morphoVaultInfos = []
-    const tokensAndOwners = []
-
-    for (const pool of pools) {
-      console.log('Checking pool:', pool.name);
-      if (pool.name.includes("Morpho")) {
-        console.log('Found Morpho pool:', pool.address);
-        morphoVaults.push(pool.address)
-        morphoVaultInfos.push(pool)
-      } else if (pool.config.vaultSharesToken !== ethers.constants.AddressZero) {
-        tokensAndOwners.push([pool.config.vaultSharesToken, pool.address])
-      } else {
-        tokensAndOwners.push([pool.config.baseToken, pool.address])
-      }
-    }
-
-    if (morphoVaults.length > 0) {
-      console.log('Found Morpho vaults found, making Morpho-specific calls');
-      console.log('Morpho vaults found:', morphoVaults);
-      console.log('Morpho vault infos:', morphoVaultInfos.map(v => ({ name: v.name, address: v.address })));
-      console.log('Starting multicalls for', morphoVaults.length, 'Morpho vaults');
-      const mVaults = (
-        await sdk.api.abi.multiCall({
-          abi: {
-            "inputs": [],
-            "name": "vault",
-            "outputs": [{"name": "", "type": "address"}],
-            "stateMutability": "view",
-            "type": "function"
-          },
-          calls: morphoVaults.map(vault => ({ target: vault })),
-          chain
-        })
-      ).output.map(o => o.output);
-      console.log('Morpho vaults:', mVaults);
-
-      if (!mVaults.length || mVaults.every(v => v === null)) {
-        console.log('No valid Morpho vaults found, skipping remaining calls');
-        return [];
-      }
-
-      const mCollaterals = (
-        await sdk.api.abi.multiCall({
-          abi: {
-            "inputs": [],
-            "name": "collateralToken",
-            "outputs": [{"name": "", "type": "address"}],
-            "stateMutability": "view",
-            "type": "function"
-          },
-          calls: morphoVaults.map(vault => ({ target: vault })),
-          chain
-        })
-      ).output.map(o => o.output);
-      console.log('Morpho collaterals:', mCollaterals);
-
-      const mOracles = (
-        await sdk.api.abi.multiCall({
-          abi: {
-            "inputs": [],
-            "name": "oracle",
-            "outputs": [{"name": "", "type": "address"}],
-            "stateMutability": "view",
-            "type": "function"
-          },
-          calls: morphoVaults.map(vault => ({ target: vault })),
-          chain
-        })
-      ).output.map(o => o.output);
-      console.log('Morpho oracles:', mOracles);
-
-      const mIrms = (
-        await sdk.api.abi.multiCall({
-          abi: {
-            "inputs": [],
-            "name": "irm",
-            "outputs": [{"name": "", "type": "address"}],
-            "stateMutability": "view",
-            "type": "function"
-          },
-          calls: morphoVaults.map(vault => ({ target: vault })),
-          chain
-        })
-      ).output.map(o => o.output);
-      console.log('Morpho irms:', mIrms);
-
-      const mLltvs = (
-        await sdk.api.abi.multiCall({
-          abi: {
-            "inputs": [],
-            "name": "lltv",
-            "outputs": [{"name": "", "type": "uint256"}],
-            "stateMutability": "view",
-            "type": "function"
-          },
-          calls: morphoVaults.map(vault => ({ target: vault })),
-          chain
-        })
-      ).output.map(o => o.output);
-      console.log('Morpho lltvs:', mLltvs);
-
-      const morphoMarketIds = morphoVaultInfos.map((vault, i) => {
-        const packedIds = ethers.utils.solidityKeccak256(
-          ['address', 'address', 'address', 'address', 'uint256'],
-          [vault.config.baseToken, mCollaterals[i], mOracles[i], mIrms[i], mLltvs[i]]
-        );
-        return packedIds;
-      })
-      console.log('Morpho market ids:', morphoMarketIds);
-
-      const positionCalls = morphoVaults.map((vault, i) => ({ target: mVaults[i], abi: POSITION_ABI, params: [morphoMarketIds[i], vault], }))
-      const positions = (
-        await sdk.api.abi.multiCall({
-          calls: positionCalls,
-          abi: POSITION_ABI,
-          chain
-        })
-      ).output;
-      console.log('Morpho positions:', positions);
-
-      morphoVaultsAndPositions = positions.map((position, i) => {
-        const supplyShares = position.supplyShares / 1e6;
-        const borrowShares = position.borrowShares * -1 / 1e6;
-        return { supplyShares, borrowShares };
-      });
-    } else {
-      console.log('No Morpho vaults found, skipping Morpho-specific calls');
-    }
-
     const poolsData = await Promise.allSettled(
       pools.map(async (pool) => {
         try {
           console.log('Processing pool:', pool.name);
 
-          // def calc_apr(config, info):
-          //   effective_share_reserves = info['shareReserves'] - info['shareAdjustment']
-          //   ratio = (config['initialVaultSharePrice']/1e18 * effective_share_reserves) / info['bondReserves']
-          //   spot_price = pow(ratio, config['timeStretch']/1e18)
-          //   t = config['positionDuration'] / (365 * 24 * 60 * 60)
-          //   return (1 - spot_price) / (spot_price * t)
           const effective_share_reserves = pool.info.shareReserves - pool.info.shareAdjustment;
           const ratio = (pool.config.initialVaultSharePrice / 1e18 * effective_share_reserves) / pool.info.bondReserves;
           const spot_price = Math.pow(ratio, pool.config.timeStretch / 1e18);
@@ -486,24 +386,10 @@ async function getApy(chain) {
           console.log('Vault shares balance:', vaultSharesBalance);
 
           // in Hyperdrive, totalSupply and tvlUsd are the same because there is no borrowing
-          let totalSupplyUsd = (vaultSharesBalance / 10 ** token_decimals) * token_price;
+          let totalSupplyUsd = ((Number(vaultSharesBalance) || 0) / 10 ** token_decimals) * token_price;
           let tvlUsd = Number(totalSupplyUsd) || 0;
           let totalBorrowUsd = 0;
           console.log('TVL calculation:', { totalSupplyUsd, tvlUsd, totalBorrowUsd });
-
-          // if this is a Morpho vault, add supplyShares and subtract borrowShares
-          if (pool.name.includes("Morpho")) {
-            const morphoVaultIndex = morphoVaults.indexOf(pool.address);
-            console.log('Morpho vault index:', morphoVaultIndex);
-            const morphoVaultAndPosition = morphoVaultsAndPositions[morphoVaultIndex];
-            console.log('Morpho position:', morphoVaultAndPosition);
-            if (morphoVaultAndPosition) {
-              totalSupplyUsd += morphoVaultAndPosition.supplyShares * token_price;
-              tvlUsd += morphoVaultAndPosition.supplyShares * token_price;
-              totalBorrowUsd -= morphoVaultAndPosition.borrowShares * token_price;
-              console.log('Updated TVL with Morpho:', { totalSupplyUsd, tvlUsd, totalBorrowUsd });
-            }
-          }
 
           const result = {
             pool: pool.name,
@@ -550,7 +436,6 @@ async function apy() {
     .filter((p) => Boolean(p));
 }
 
-// Export only the main apy function
 module.exports = {
   apy,
 };

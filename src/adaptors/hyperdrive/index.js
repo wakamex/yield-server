@@ -192,7 +192,7 @@ async function getApy(chain) {
     // Get token addresses and fetch prices
     let priceWithBase = false;
     let tokenAddress;
-    const prices = await Promise.all(poolConfig.map(async config => {
+    await Promise.all(poolConfig.map(async config => {
       tokenAddress = config.vaultSharesToken === "0x0000000000000000000000000000000000000000" 
         ? config.baseToken 
         : config.vaultSharesToken;
@@ -212,7 +212,6 @@ async function getApy(chain) {
       config.token = price;
       config.token.priceWithBase = priceWithBase;
       config.token.address = tokenAddress;
-      return { [priceKey]: price };
     }));
 
     const poolInfos = (
@@ -261,7 +260,11 @@ async function getApy(chain) {
             totalBorrowUsd,
             url: `app.hyperdrive.box/market/${providers[chain].chainId}/${pool.address}`
           };
-          console.log('Pool result:', result);
+          console.log(
+            `${chain.padEnd(10)} ${pool.name.padEnd(55)} (${pool.address.substring(0, 7)}) ` +
+            `${Math.round(tvlUsd).toLocaleString().padStart(12)} ${pool.config.token.symbol.padEnd(14)} ` +
+            `${(apy * 100).toFixed(2).padStart(5)}%`
+          );
           return result;
         } catch (error) {
           console.error('Error processing pool:', pool.name, error);
@@ -281,10 +284,33 @@ async function getApy(chain) {
 
 async function apy() {
   console.log('Chains to process:', Object.keys(config));
+  // Print header only once
+  console.log('network'.padEnd(10), 'pool'.padEnd(55), '(address)'.padEnd(11), 'tvl'.padStart(10), 'token'.padEnd(14), 'APR'.padStart(6));
   const pools = await Promise.allSettled(
     Object.keys(config).map(async (chain) => getApy(chain))
   );
-  console.log('Pool results:', pools);
+
+  // Check for unique pool names
+  // If a duplicate is found, append [network] to its name
+  const replaceNames = {
+    xdai: "gnosis"
+  }
+  const uniquePoolNames = new Set();
+  pools
+    .filter(p => p.status === 'fulfilled')
+    .forEach(promiseResult => {
+      promiseResult.value.forEach(pool => {
+        if (pool && uniquePoolNames.has(pool.pool)) {
+          // Identify the non-ethereum pool of the pair
+          const nonEthPool = pool.chain.includes('ethereum') ? pool : pool;
+          // Add [network] to the non-ethereum pool name
+          nonEthPool.pool = `${nonEthPool.pool} [${replaceNames[nonEthPool.chain] || nonEthPool.chain}]`;
+        }
+        if (pool) {
+          uniquePoolNames.add(pool.pool);
+        }
+      });
+    });
 
   return pools
     .filter((i) => i.status === 'fulfilled')

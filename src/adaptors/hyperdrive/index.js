@@ -207,23 +207,29 @@ async function getApy(chain) {
     await Promise.all(poolConfig.map(async config => {
       let priceWithBase = false;
       let tokenAddress = config.vaultSharesToken === ethers.constants.AddressZero
-        ? config.baseToken 
+        ? config.baseToken
         : config.vaultSharesToken;
-      let priceKey = `${chain}:${tokenAddress}`;
-      config.token_contract_address = tokenAddress;
-      let priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
-      let price = priceResponse.data.coins[priceKey];
-      if (price === undefined && config.baseToken !== ethers.constants.AddressZero) {
-        tokenAddress = config.baseToken;
-        priceKey = `${chain}:${tokenAddress}`;
-        priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
-        price = priceResponse.data.coins[priceKey];
-        config.token_contract_address = config.baseToken;
-        priceWithBase = true;
+      try {
+        let priceKey = `${chain}:${tokenAddress}`;
+        config.token_contract_address = tokenAddress;
+        let priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
+        let price = priceResponse.data.coins[priceKey];
+        if (price === undefined && config.baseToken !== ethers.constants.AddressZero) {
+          tokenAddress = config.baseToken;
+          priceKey = `${chain}:${tokenAddress}`;
+          priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
+          price = priceResponse.data.coins[priceKey];
+          config.token_contract_address = config.baseToken;
+          priceWithBase = true;
+        }
+        config.token = price;
+        config.token.priceWithBase = priceWithBase;
+        config.token.address = tokenAddress;
+      } catch (error) {
+        console.error(`Error fetching price for ${priceKey}:`, error);
+        // Return default token price info
+        config.token = { price: 0, decimals: 0, symbol: '?', priceWithBase: priceWithBase, address: tokenAddress };
       }
-      config.token = price;
-      config.token.priceWithBase = priceWithBase;
-      config.token.address = tokenAddress;
     }));
 
     const poolInfos = (

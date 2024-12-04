@@ -214,6 +214,8 @@ async function getApy(chain) {
         config.token_contract_address = tokenAddress;
         let priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
         let price = priceResponse.data.coins[priceKey];
+        // some share tokens (like sGYD) have no price
+        // so instead we price the base token (like GYD) and multiply by the latest vaultSharePrice in Hyperdrive
         if (price === undefined && config.baseToken !== ethers.constants.AddressZero) {
           tokenAddress = config.baseToken;
           priceKey = `${chain}:${tokenAddress}`;
@@ -245,6 +247,7 @@ async function getApy(chain) {
     const poolsData = await Promise.allSettled(
       pools.map(async (pool) => {
         try {
+          // https://github.com/delvtech/hyperdrive/blob/8347e32d566258da44c44984c8b70f06517f6e46/contracts/src/libraries/HyperdriveMath.sol#L78-L173
           const effective_share_reserves = pool.info.shareReserves - pool.info.shareAdjustment;
           const ratio = (pool.config.initialVaultSharePrice / 1e18 * effective_share_reserves) / pool.info.bondReserves;
           const spot_price = Math.pow(ratio, pool.config.timeStretch / 1e18);

@@ -28,10 +28,10 @@ async function queryPoolHoldings(poolContract, config, name) {
         chain: config.chain
       })
     ).output;
-  } else if (name?.includes(' LP ')) {
+    } else if (config.kind.toLowerCase().includes('lp')) {
     // LP token case
     const gauge_contract_address = (await sdk.api.abi.call({
-      target: poolContract.address, //"0xf49D1f422a7661541033C566f358E944a2bFb976"
+      target: poolContract.address,
       chain: config.chain,
       abi: 'function gauge() view returns (address)',
     })).output;
@@ -56,7 +56,7 @@ async function queryPoolHoldings(poolContract, config, name) {
   }
 
   // Query vault shares balance
-  if (name?.includes('Morpho')) {
+  if (config.kind=="MorphoBlueHyperdrive") {
     vaultContractAddress = (
       await sdk.api.abi.call({
         target: poolContract.address,
@@ -184,9 +184,35 @@ async function getApy(chain) {
       })
     ).output.map(o => o.output);
 
-    // Add chain to each config
-    poolConfig.forEach(config => {
+    const poolKinds = (
+      await sdk.api.abi.multiCall({
+        abi: 'function kind() pure returns (string)',
+        calls: instances.map(i => ({ target: i })),
+        chain
+      })
+    ).output.map(o => o.output);
+
+    // First try to check if gauge function exists using a try-catch
+    const hasGauge = await Promise.all(
+      instances.map(async (instance) => {
+        try {
+          const result = await sdk.api.abi.call({
+            target: instance,
+            chain,
+            abi: 'function gauge() view returns (address)',
+          });
+          return result.output !== "0x0000000000000000000000000000000000000000";
+        } catch (e) {
+          return false;
+        }
+      })
+    );
+
+    // Add chain and kind to each config
+    poolConfig.forEach((config, index) => {
       config.chain = chain;
+      config.kind = poolKinds[index];
+      config.hasGauge = hasGauge[index];
     });
 
     // Get token addresses and fetch prices
@@ -290,8 +316,7 @@ async function apy() {
     Object.keys(config).map(async (chain) => getApy(chain))
   );
 
-  // Check for unique pool names
-  // If a duplicate is found, append [network] to its name
+  // append [network] to duplicate pool names
   const replaceNames = {
     xdai: "gnosis"
   }

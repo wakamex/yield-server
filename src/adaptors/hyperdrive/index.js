@@ -12,123 +12,36 @@ const config = {
   linea: { registry: '0x6668310631Ad5a5ac92dC9549353a5BaaE16C666', },
 }
 
-async function queryPoolHoldings(poolContract, config, name) {
-  let baseTokenBalance;
-  let vaultSharesBalance;
-  let vaultContractAddress;
-
-  // Query base token balance
+function queryBaseTokenBalance(config, poolContract) {
   if (config.baseToken === '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE') {
     // ETH case
-    baseTokenBalance = (
-      await sdk.api.eth.getBalance({
-        target: poolContract.address,
-        chain: config.chain
-      })
-    ).output;
-    } else if (config.kind.toLowerCase().includes('lp')) {
+    return sdk.api.eth.getBalance({
+      target: poolContract.address,
+      chain: config.chain
+    }).then(result => result.output);
+  } else if (config.kind.toLowerCase().includes('lp')) {
     // LP token case
-    const gauge_contract_address = (await sdk.api.abi.call({
+    return sdk.api.abi.call({
       target: poolContract.address,
       chain: config.chain,
       abi: 'function gauge() view returns (address)',
-    })).output;
-    baseTokenBalance = (
-      await sdk.api.erc20.balanceOf({
+    }).then(gaugeResult => {
+      const gauge_contract_address = gaugeResult.output;
+      return sdk.api.erc20.balanceOf({
         target: gauge_contract_address,
         owner: poolContract.address,
         chain: config.chain
-      })
-    ).output;
-  } else if (config.baseToken !== '0x0000000000000000000000000000000000000000') {
+      }).then(balanceResult => balanceResult.output);
+    });
+  } else if (config.baseToken !== ethers.constants.AddressZero) {
     // Standard ERC20 case
-    baseTokenBalance = (
-      await sdk.api.erc20.balanceOf({
-        target: config.baseToken,
-        owner: poolContract.address,
-        chain: config.chain
-      })
-    ).output;
-  } else {
-    baseTokenBalance = '0';
+    return sdk.api.erc20.balanceOf({
+      target: config.baseToken,
+      owner: poolContract.address,
+      chain: config.chain
+    }).then(result => result.output);
   }
-
-  // Query vault shares balance
-  if (config.kind=="MorphoBlueHyperdrive") {
-    vaultContractAddress = (
-      await sdk.api.abi.call({
-        target: poolContract.address,
-        abi: 'function vault() view returns (address)',
-        chain: config.chain
-      })
-    ).output;
-
-    const [collateralToken, oracle, irm, lltv] = await Promise.all([
-      sdk.api.abi.call({
-        target: poolContract.address,
-        abi: 'function collateralToken() view returns (address)',
-        chain: config.chain
-      }),
-      sdk.api.abi.call({
-        target: poolContract.address,
-        abi: 'function oracle() view returns (address)',
-        chain: config.chain
-      }),
-      sdk.api.abi.call({
-        target: poolContract.address,
-        abi: 'function irm() view returns (address)',
-        chain: config.chain
-      }),
-      sdk.api.abi.call({
-        target: poolContract.address,
-        abi: 'function lltv() view returns (uint256)',
-        chain: config.chain
-      })
-    ]);
-
-    const morphoMarketId = encodeMorphoMarketIds(
-      config.baseToken, collateralToken.output, oracle.output, irm.output, lltv.output
-    );
-
-    const position = (
-      await sdk.api.abi.call({
-        target: vaultContractAddress,
-        abi: POSITION_ABI,
-        params: [morphoMarketId, poolContract.address],
-        chain: config.chain
-      })
-    ).output;
-
-    const market = (
-      await sdk.api.abi.call({
-        target: vaultContractAddress,
-        abi: MARKET_ABI,
-        params: [morphoMarketId],
-        chain: config.chain
-      })
-    ).output;
-
-    const totalSupplyAssets = market.totalSupplyAssets;
-    const totalSupplyShares = market.totalSupplyShares;
-    const virtualAssets = 1;
-    const virtualShares = 1e6;
-    const vaultSharePrice = (totalSupplyAssets + virtualAssets) / (totalSupplyShares + virtualShares) * 1e12;
-
-    vaultSharesBalance = position.supplyShares / 1e6 * vaultSharePrice;
-  } else if (config.vaultSharesToken !== '0x0000000000000000000000000000000000000000') {
-    vaultSharesBalance = (
-      await sdk.api.erc20.balanceOf({
-        target: config.vaultSharesToken,
-        owner: poolContract.address,
-        chain: config.chain
-      })
-    ).output;
-  } else {
-    // Use base token balance as vault shares balance
-    vaultSharesBalance = baseTokenBalance;
-  }
-
-  return vaultSharesBalance;
+  return '0';
 }
 
 function encodeMorphoMarketIds(baseToken, collateral, oracle, irm, lltv) {
@@ -137,6 +50,83 @@ function encodeMorphoMarketIds(baseToken, collateral, oracle, irm, lltv) {
     [baseToken, collateral, oracle, irm, lltv]
   );
   return ethers.utils.keccak256(packedIds);
+}
+
+async function calculateMorphoVaultSharesBalance(poolContract, config) {
+  const vaultContractAddress = (
+    await sdk.api.abi.call({
+      target: poolContract.address,
+      abi: 'function vault() view returns (address)',
+      chain: config.chain
+    })
+  ).output;
+
+  const [collateralToken, oracle, irm, lltv] = await Promise.all([
+    sdk.api.abi.call({
+      target: poolContract.address,
+      abi: 'function collateralToken() view returns (address)',
+      chain: config.chain
+    }),
+    sdk.api.abi.call({
+      target: poolContract.address,
+      abi: 'function oracle() view returns (address)',
+      chain: config.chain
+    }),
+    sdk.api.abi.call({
+      target: poolContract.address,
+      abi: 'function irm() view returns (address)',
+      chain: config.chain
+    }),
+    sdk.api.abi.call({
+      target: poolContract.address,
+      abi: 'function lltv() view returns (uint256)',
+      chain: config.chain
+    })
+  ]);
+
+  const morphoMarketId = encodeMorphoMarketIds(config.baseToken, collateralToken.output, oracle.output, irm.output, lltv.output);
+
+  const position = (
+    await sdk.api.abi.call({
+      target: vaultContractAddress,
+      abi: POSITION_ABI,
+      params: [morphoMarketId, poolContract.address],
+      chain: config.chain
+    })
+  ).output;
+
+  const market = (
+    await sdk.api.abi.call({
+      target: vaultContractAddress,
+      abi: MARKET_ABI,
+      params: [morphoMarketId],
+      chain: config.chain
+    })
+  ).output;
+
+  // https://github.com/morpho-org/morpho-blue/blob/a4210e9198bf5e3aa3cde891e035f33dcb31e0de/src/libraries/SharesMathLib.sol#L33
+  const vaultSharePrice = (market.totalSupplyAssets + 1) / (market.totalSupplyShares + 1e6) * 1e12;
+
+  return position.supplyShares / 1e6 * vaultSharePrice;
+}
+
+async function calculateVanillaVaultSharesBalance(poolContract, config) {
+  return (await sdk.api.erc20.balanceOf({
+    target: config.vaultSharesToken,
+    owner: poolContract.address,
+    chain: config.chain
+  })).output;
+}
+
+async function queryVaultSharesBalance(poolContract, config, baseTokenBalance) {
+  if (config.kind === "MorphoBlueHyperdrive") return calculateMorphoVaultSharesBalance(poolContract, config);
+  if (config.vaultSharesToken !== ethers.constants.AddressZero) return calculateVanillaVaultSharesBalance(poolContract, config);
+  return baseTokenBalance;  // Otherwise, use base token balance as vault shares balance
+}
+
+async function queryPoolHoldings(poolContract, config) {
+  let baseTokenBalance = await queryBaseTokenBalance(config, poolContract);
+  return queryVaultSharesBalance(poolContract, config, baseTokenBalance);
 }
 
 async function getApy(chain) {
@@ -199,7 +189,7 @@ async function getApy(chain) {
             chain,
             abi: 'function gauge() view returns (address)',
           });
-          return result.output !== "0x0000000000000000000000000000000000000000";
+          return result.output !== ethers.constants.AddressZero;
         } catch (e) {
           return false;
         }
@@ -216,14 +206,14 @@ async function getApy(chain) {
     // Get token addresses and fetch prices
     await Promise.all(poolConfig.map(async config => {
       let priceWithBase = false;
-      let tokenAddress = config.vaultSharesToken === "0x0000000000000000000000000000000000000000"
+      let tokenAddress = config.vaultSharesToken === ethers.constants.AddressZero
         ? config.baseToken 
         : config.vaultSharesToken;
       let priceKey = `${chain}:${tokenAddress}`;
       config.token_contract_address = tokenAddress;
       let priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
       let price = priceResponse.data.coins[priceKey];
-      if (price === undefined && config.baseToken !== '0x0000000000000000000000000000000000000000') {
+      if (price === undefined && config.baseToken !== ethers.constants.AddressZero) {
         tokenAddress = config.baseToken;
         priceKey = `${chain}:${tokenAddress}`;
         priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
@@ -231,7 +221,6 @@ async function getApy(chain) {
         config.token_contract_address = config.baseToken;
         priceWithBase = true;
       }
-      // store price in config
       config.token = price;
       config.token.priceWithBase = priceWithBase;
       config.token.address = tokenAddress;
@@ -259,7 +248,7 @@ async function getApy(chain) {
           // time_stretch is in fractions of a year so we can use it to convert from apr to apy
           // compounding happens every time_stretch years, so we use discrete compounding formula
           const apy = Math.pow(1 + apr * time_stretch, 1/time_stretch) - 1;
-          const vaultSharesBalance = await queryPoolHoldings(pool, pool.config, pool.name);
+          const vaultSharesBalance = await queryPoolHoldings(pool, pool.config);
 
           // in Hyperdrive, totalSupply and tvlUsd are the same because there is no borrowing
           let totalSupplyUsd = ((Number(vaultSharesBalance) || 0) / 10 ** pool.config.token.decimals) * pool.config.token.price;

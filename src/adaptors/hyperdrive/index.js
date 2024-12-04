@@ -5,13 +5,11 @@ const utils = require('../utils');
 const providers = require('@defillama/sdk/build/providers.json');
 const { GET_POOL_CONFIG_ABI, GET_POOL_INFO_ABI, POSITION_ABI, MARKET_ABI } = require('./abi');
 
-const FUTURE_REGISTRY_ADDRESS = "0x6668310631Ad5a5ac92dC9549353a5BaaE16C666"
-
 const config = {
   ethereum: { registry: '0xbe082293b646cb619a638d29e8eff7cf2f46aa3a', },
   xdai: { registry: '0x666fa9ef9bca174a042c4c306b23ba8ee0c59666', },
-  base: {},
-  linea: {},
+  base: { registry: '0x6668310631Ad5a5ac92dC9549353a5BaaE16C666', },
+  linea: { registry: '0x6668310631Ad5a5ac92dC9549353a5BaaE16C666', },
 }
 
 async function queryPoolHoldings(poolContract, config, name) {
@@ -142,7 +140,7 @@ function encodeMorphoMarketIds(baseToken, collateral, oracle, irm, lltv) {
 }
 
 async function getApy(chain) {
-  const { registry = FUTURE_REGISTRY_ADDRESS } = config[chain];
+  const registry = config[chain].registry;
 
   try {
     // First get the number of instances

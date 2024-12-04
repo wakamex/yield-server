@@ -13,9 +13,6 @@ const config = {
   base: {},
   linea: {},
 }
-// const config = {
-//   base: {},
-// }
 
 async function queryPoolHoldings(poolContract, config, name) {
   let baseTokenBalance;
@@ -118,7 +115,6 @@ async function queryPoolHoldings(poolContract, config, name) {
     const virtualAssets = 1;
     const virtualShares = 1e6;
     const vaultSharePrice = (totalSupplyAssets + virtualAssets) / (totalSupplyShares + virtualShares) * 1e12;
-    console.log('vaultSharePrice:', vaultSharePrice);
 
     vaultSharesBalance = position.supplyShares / 1e6 * vaultSharePrice;
   } else if (config.vaultSharesToken !== '0x0000000000000000000000000000000000000000') {
@@ -146,9 +142,7 @@ function encodeMorphoMarketIds(baseToken, collateral, oracle, irm, lltv) {
 }
 
 async function getApy(chain) {
-  console.log('Getting APY for chain:', chain);
   const { registry = FUTURE_REGISTRY_ADDRESS } = config[chain];
-  console.log('Using registry:', registry);
 
   try {
     // First get the number of instances
@@ -174,13 +168,6 @@ async function getApy(chain) {
       })
     ).output.map(o => o.output);
 
-    console.log('Found instances:', instances);
-
-    // Debug only on the ith instance
-    // const i = 6;
-    // instances = instances.slice(i, i + 1);
-    // console.log('Debugging instance:', instances);
-
     const poolNames = (
       await sdk.api.abi.multiCall({
         abi: 'function name() view returns (string)',
@@ -188,8 +175,6 @@ async function getApy(chain) {
         chain
       })
     ).output.map(o => o.output);
-
-    console.log('Pool names:', poolNames);
 
     const poolConfig = (
       await sdk.api.abi.multiCall({
@@ -218,10 +203,7 @@ async function getApy(chain) {
       if (price === undefined && config.baseToken !== '0x0000000000000000000000000000000000000000') {
         tokenAddress = config.baseToken;
         priceKey = `${chain}:${tokenAddress}`;
-        console.log("pricing with base token. base token key:", priceKey);
         priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
-        console.log("url for base token:", `https://coins.llama.fi/prices/current/${priceKey}`);
-        console.log("base token price:", priceResponse.data.coins[priceKey]);
         price = priceResponse.data.coins[priceKey];
         config.token_contract_address = config.baseToken;
         priceWithBase = true;
@@ -232,7 +214,6 @@ async function getApy(chain) {
       config.token.address = tokenAddress;
       return { [priceKey]: price };
     }));
-    console.log('Fetched token prices:', Object.assign({}, ...prices));
 
     const poolInfos = (
       await sdk.api.abi.multiCall({
@@ -243,40 +224,29 @@ async function getApy(chain) {
     ).output.map(o => o.output);
 
     const pools = poolNames.map((name, i) => ({ name, config: poolConfig[i], info: poolInfos[i], address: instances[i] }))
-    console.log('Processing pools:', pools.map(p => ({ name: p.name, address: p.address })));
 
     const poolsData = await Promise.allSettled(
       pools.map(async (pool) => {
         try {
-          console.log('Processing pool:', pool.name);
-
           const effective_share_reserves = pool.info.shareReserves - pool.info.shareAdjustment;
           const ratio = (pool.config.initialVaultSharePrice / 1e18 * effective_share_reserves) / pool.info.bondReserves;
           const spot_price = Math.pow(ratio, pool.config.timeStretch / 1e18);
           const time_stretch = pool.config.positionDuration / (365 * 24 * 60 * 60);
           const apr = (1 - spot_price) / (spot_price * time_stretch);
-          console.log('APR calculation:', { effective_share_reserves, ratio, spot_price, time_stretch, apr });
 
           // time_stretch is in fractions of a year so we can use it to convert from apr to apy
           // compounding happens every time_stretch years, so we use discrete compounding formula
           const apy = Math.pow(1 + apr * time_stretch, 1/time_stretch) - 1;
-          console.log('Calculated APY:', apy);
-
           const vaultSharesBalance = await queryPoolHoldings(pool, pool.config, pool.name);
-          console.log('Vault shares balance:', vaultSharesBalance);
 
           // in Hyperdrive, totalSupply and tvlUsd are the same because there is no borrowing
           let totalSupplyUsd = ((Number(vaultSharesBalance) || 0) / 10 ** pool.config.token.decimals) * pool.config.token.price;
-          console.log('Total supply USD:', totalSupplyUsd);
-          console.log('Decimals:', pool.config.token.decimals);
-          console.log('Price:', pool.config.token.price);
           // apply vaultSharePrice from config if priceWithBase is true
           if (pool.config.token.priceWithBase) {
             totalSupplyUsd = totalSupplyUsd * pool.info.vaultSharePrice / 1e18;
           }
           let tvlUsd = Number(totalSupplyUsd) || 0;
           let totalBorrowUsd = 0;
-          console.log('TVL calculation:', { totalSupplyUsd, tvlUsd, totalBorrowUsd });
 
           const result = {
             pool: pool.name,

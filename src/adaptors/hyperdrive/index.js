@@ -214,10 +214,9 @@ async function getApy(chain) {
     });
 
     // Get token addresses and fetch prices
-    let priceWithBase = false;
-    let tokenAddress;
     await Promise.all(poolConfig.map(async config => {
-      tokenAddress = config.vaultSharesToken === "0x0000000000000000000000000000000000000000" 
+      let priceWithBase = false;
+      let tokenAddress = config.vaultSharesToken === "0x0000000000000000000000000000000000000000"
         ? config.baseToken 
         : config.vaultSharesToken;
       let priceKey = `${chain}:${tokenAddress}`;

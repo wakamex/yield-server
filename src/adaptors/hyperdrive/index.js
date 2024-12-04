@@ -129,6 +129,22 @@ async function queryPoolHoldings(poolContract, config) {
   return queryVaultSharesBalance(poolContract, config, baseTokenBalance);
 }
 
+async function calculateAPYfromPool(pool) {
+  // https://github.com/delvtech/hyperdrive/blob/8347e32d566258da44c44984c8b70f06517f6e46/contracts/src/libraries/HyperdriveMath.sol#L78-L173
+  const effective_share_reserves = pool.info.shareReserves - pool.info.shareAdjustment;
+  const ratio = (pool.config.initialVaultSharePrice / 1e18 * effective_share_reserves) / pool.info.bondReserves;
+  const spot_price = Math.pow(ratio, pool.config.timeStretch / 1e18);
+  const time_stretch = pool.config.positionDuration / (365 * 24 * 60 * 60);
+  const APR = (1 - spot_price) / (spot_price * time_stretch);
+
+  // convert APR to APY
+  // time_stretch is in fractions of a year so we can use it to convert from apr to apy
+  // compounding happens every time_stretch years, so we use discrete compounding formula
+  const APY = Math.pow(1 + APR * time_stretch, 1 / time_stretch) - 1;
+
+  return APY;
+}
+
 async function getApy(chain) {
   const registry = config[chain].registry;
 
@@ -247,16 +263,8 @@ async function getApy(chain) {
     const poolsData = await Promise.allSettled(
       pools.map(async (pool) => {
         try {
-          // https://github.com/delvtech/hyperdrive/blob/8347e32d566258da44c44984c8b70f06517f6e46/contracts/src/libraries/HyperdriveMath.sol#L78-L173
-          const effective_share_reserves = pool.info.shareReserves - pool.info.shareAdjustment;
-          const ratio = (pool.config.initialVaultSharePrice / 1e18 * effective_share_reserves) / pool.info.bondReserves;
-          const spot_price = Math.pow(ratio, pool.config.timeStretch / 1e18);
-          const time_stretch = pool.config.positionDuration / (365 * 24 * 60 * 60);
-          const apr = (1 - spot_price) / (spot_price * time_stretch);
+          const APY = await calculateAPYfromPool(pool);
 
-          // time_stretch is in fractions of a year so we can use it to convert from apr to apy
-          // compounding happens every time_stretch years, so we use discrete compounding formula
-          const apy = Math.pow(1 + apr * time_stretch, 1/time_stretch) - 1;
           const vaultSharesBalance = await queryPoolHoldings(pool, pool.config);
 
           // in Hyperdrive, totalSupply and tvlUsd are the same because there is no borrowing
@@ -274,8 +282,8 @@ async function getApy(chain) {
             project: 'hyperdrive',
             symbol: pool.config.token.symbol,
             tvlUsd,
-            apy: apy * 100,
-            apyBase: apy * 100,
+            apy: APY * 100,
+            apyBase: APY * 100,
             underlyingTokens: [pool.config.token_contract_address],
             totalSupplyUsd,
             totalBorrowUsd,
@@ -284,7 +292,7 @@ async function getApy(chain) {
           console.log(
             `${chain.padEnd(10)} ${pool.name.padEnd(55)} (${pool.address.substring(0, 7)}) ` +
             `${Math.round(tvlUsd).toLocaleString().padStart(12)} ${pool.config.token.symbol.padEnd(14)} ` +
-            `${(apy * 100).toFixed(2).padStart(5)}%`
+            `${(APY * 100).toFixed(2).padStart(5)}%`
           );
           return result;
         } catch (error) {

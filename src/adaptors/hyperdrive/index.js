@@ -338,7 +338,7 @@ async function apy() {
     .filter((i) => i.status === 'fulfilled')
     .map((i) => i.value)
     .flat()
-    .filter((p) => Boolean(p));
+    .filter(Boolean);
 }
 
 module.exports = {

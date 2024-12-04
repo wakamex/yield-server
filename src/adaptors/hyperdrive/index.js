@@ -136,17 +136,14 @@ const MARKET_ABI = {
   "type": "function"
 };
 
-// const config = {
-//   ethereum: { registry: '0xbe082293b646cb619a638d29e8eff7cf2f46aa3a', },
-//   xdai: { registry: '0x666fa9ef9bca174a042c4c306b23ba8ee0c59666', },
-//   base: {},
-//   linea: {},
-// }
 const config = {
   ethereum: { registry: '0xbe082293b646cb619a638d29e8eff7cf2f46aa3a', },
+  xdai: { registry: '0x666fa9ef9bca174a042c4c306b23ba8ee0c59666', },
+  base: {},
+  linea: {},
 }
 // const config = {
-//   xdai: { registry: '0x666fa9ef9bca174a042c4c306b23ba8ee0c59666', },
+//   base: {},
 // }
 
 async function queryPoolHoldings(poolContract, config, name) {
@@ -165,9 +162,14 @@ async function queryPoolHoldings(poolContract, config, name) {
     ).output;
   } else if (name?.includes(' LP ')) {
     // LP token case
+    const gauge_contract_address = (await sdk.api.abi.call({
+      target: poolContract.address, //"0xf49D1f422a7661541033C566f358E944a2bFb976"
+      chain: config.chain,
+      abi: 'function gauge() view returns (address)',
+    })).output;
     baseTokenBalance = (
       await sdk.api.erc20.balanceOf({
-        target: config.extraData,
+        target: gauge_contract_address,
         owner: poolContract.address,
         chain: config.chain
       })
@@ -304,9 +306,9 @@ async function getApy(chain) {
     console.log('Found instances:', instances);
 
     // Debug only on the ith instance
-    const i = 4;
-    instances = instances.slice(i, i + 1);
-    console.log('Debugging instance:', instances);
+    // const i = 6;
+    // instances = instances.slice(i, i + 1);
+    // console.log('Debugging instance:', instances);
 
     const poolNames = (
       await sdk.api.abi.multiCall({
@@ -326,19 +328,40 @@ async function getApy(chain) {
       })
     ).output.map(o => o.output);
 
-    // Get token addresses for price fetching
-    const tokenAddresses = poolConfig.map(config => 
-      config.vaultSharesToken === "0x0000000000000000000000000000000000000000" 
-        ? config.baseToken 
-        : config.vaultSharesToken
-    );
-    console.log('Token addresses to fetch prices for:', tokenAddresses);
+    // Add chain to each config
+    poolConfig.forEach(config => {
+      config.chain = chain;
+    });
 
-    // Fetch prices for all tokens
-    const priceKeys = tokenAddresses.map(addr => `${chain}:${addr}`);
-    const pricesResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKeys.join(',')}`);
-    const prices = pricesResponse.data.coins;
-    console.log('Fetched token prices:', prices);
+    // Get token addresses and fetch prices
+    let priceWithBase = false;
+    let tokenAddress;
+    const prices = await Promise.all(poolConfig.map(async config => {
+      tokenAddress = config.vaultSharesToken === "0x0000000000000000000000000000000000000000" 
+        ? config.baseToken 
+        : config.vaultSharesToken;
+      let priceKey = `${chain}:${tokenAddress}`;
+      config.token_contract_address = tokenAddress;
+      let priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
+      let price = priceResponse.data.coins[priceKey];
+      if (price === undefined && config.baseToken !== '0x0000000000000000000000000000000000000000') {
+        tokenAddress = config.baseToken;
+        priceKey = `${chain}:${tokenAddress}`;
+        console.log("pricing with base token. base token key:", priceKey);
+        priceResponse = await axios.get(`https://coins.llama.fi/prices/current/${priceKey}`);
+        console.log("url for base token:", `https://coins.llama.fi/prices/current/${priceKey}`);
+        console.log("base token price:", priceResponse.data.coins[priceKey]);
+        price = priceResponse.data.coins[priceKey];
+        config.token_contract_address = config.baseToken;
+        priceWithBase = true;
+      }
+      // store price in config
+      config.token = price;
+      config.token.priceWithBase = priceWithBase;
+      config.token.address = tokenAddress;
+      return { [priceKey]: price };
+    }));
+    console.log('Fetched token prices:', Object.assign({}, ...prices));
 
     const poolInfos = (
       await sdk.api.abi.multiCall({
@@ -368,25 +391,18 @@ async function getApy(chain) {
           const apy = Math.pow(1 + apr * time_stretch, 1/time_stretch) - 1;
           console.log('Calculated APY:', apy);
 
-          const token_contract_address = pool.config.vaultSharesToken === ethers.constants.AddressZero ? pool.config.baseToken : pool.config.vaultSharesToken;
-          const tokenKey = `${chain}:${token_contract_address}`;
-          console.log('Looking up token:', { tokenKey, token_contract_address });
-
-          const token_price = prices[tokenKey]?.price;
-          const token_decimals = prices[tokenKey]?.decimals;
-          const token_symbol = prices[tokenKey]?.symbol;
-          console.log('Token info:', { token_price, token_decimals, token_symbol });
-
-          if (!token_price || !token_decimals) {
-            console.warn('Missing token info for', tokenKey);
-            return null;
-          }
-
           const vaultSharesBalance = await queryPoolHoldings(pool, pool.config, pool.name);
           console.log('Vault shares balance:', vaultSharesBalance);
 
           // in Hyperdrive, totalSupply and tvlUsd are the same because there is no borrowing
-          let totalSupplyUsd = ((Number(vaultSharesBalance) || 0) / 10 ** token_decimals) * token_price;
+          let totalSupplyUsd = ((Number(vaultSharesBalance) || 0) / 10 ** pool.config.token.decimals) * pool.config.token.price;
+          console.log('Total supply USD:', totalSupplyUsd);
+          console.log('Decimals:', pool.config.token.decimals);
+          console.log('Price:', pool.config.token.price);
+          // apply vaultSharePrice from config if priceWithBase is true
+          if (pool.config.token.priceWithBase) {
+            totalSupplyUsd = totalSupplyUsd * pool.info.vaultSharePrice / 1e18;
+          }
           let tvlUsd = Number(totalSupplyUsd) || 0;
           let totalBorrowUsd = 0;
           console.log('TVL calculation:', { totalSupplyUsd, tvlUsd, totalBorrowUsd });
@@ -395,11 +411,11 @@ async function getApy(chain) {
             pool: pool.name,
             chain,
             project: 'hyperdrive',
-            symbol: token_symbol,
+            symbol: pool.config.token.symbol,
             tvlUsd,
             apy: apy * 100,
             apyBase: apy * 100,
-            underlyingTokens: [token_contract_address],
+            underlyingTokens: [pool.config.token_contract_address],
             totalSupplyUsd,
             totalBorrowUsd,
             url: `app.hyperdrive.box/market/${providers[chain].chainId}/${pool.address}`

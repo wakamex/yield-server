@@ -267,7 +267,6 @@ async function getApy(chain) {
 
           const vaultSharesBalance = await queryPoolHoldings(pool, pool.config);
 
-          // in Hyperdrive, totalSupply and tvlUsd are the same because there is no borrowing
           let tvlUsd = (vaultSharesBalance / 10 ** pool.config.token.decimals) * pool.config.token.price;
           // apply vaultSharePrice from config if priceWithBase is true
           if (pool.config.token.priceWithBase) tvlUsd = tvlUsd * pool.info.vaultSharePrice / 1e18;
@@ -281,7 +280,7 @@ async function getApy(chain) {
             apy: APY * 100,
             apyBase: APY * 100,
             underlyingTokens: [pool.config.token_contract_address],
-            url: `app.hyperdrive.box/market/${providers[chain].chainId}/${pool.address}`
+            url: `https://app.hyperdrive.box/market/${providers[chain].chainId}/${pool.address}`
           };
           console.log(
             `${chain.padEnd(10)} ${pool.name.padEnd(55)} (${pool.address.substring(0, 7)}) ` +
